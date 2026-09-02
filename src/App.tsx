@@ -25,6 +25,19 @@ export default function App() {
           <code>#enable-webmcp-testing</code> or ChatGPT’s in-app browser to expose tools.
         </div>
       )}
+      {room.injection?.ignored && (
+        <div className="banner banner-inject" role="status">
+          Spec-injection payload ignored: <code>{room.injection.payload}</code>
+          {' '}({room.injection.locations.length} hit{room.injection.locations.length === 1 ? '' : 's'}).
+          Classification used the rule table only — it did not auto-approve any break.
+        </div>
+      )}
+      {room.lastRefusal && (
+        <div className="banner banner-refuse" role="status">
+          REFUSED <code>{room.lastRefusal.code}</code> on <code>{room.lastRefusal.tool}</code>:{' '}
+          {room.lastRefusal.message}
+        </div>
+      )}
       <Header onClassify={() => classifyDiff()} />
       {(room.parseError || room.parseWarning || room.exportError) && (
         <div className="notices">

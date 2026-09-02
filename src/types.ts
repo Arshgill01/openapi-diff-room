@@ -34,6 +34,7 @@ export type DiffCase = {
 }
 
 export type LogKind = 'tool' | 'human' | 'system'
+export type LogOutcome = 'accepted' | 'refused' | 'human'
 
 export type LogEntry = {
   id: string
@@ -41,11 +42,23 @@ export type LogEntry = {
   kind: LogKind
   title: string
   detail?: string
+  tool?: string
+  argsSummary?: string
+  outcome: LogOutcome
+  code?: string
 }
 
-export type SpecParseError = {
-  side: 'old' | 'new'
+export type InjectionState = {
+  ignored: boolean
+  payload: string
+  locations: string[]
+}
+
+export type RefusalState = {
+  code: string
   message: string
+  tool: string
+  at: string
 }
 
 export const HUMAN_ACKED: CaseStatus[] = ['acked-old', 'acked-new', 'acked-intentional']
