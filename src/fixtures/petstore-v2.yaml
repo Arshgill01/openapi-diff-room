@@ -1,0 +1,140 @@
+openapi: 3.0.3
+info:
+  title: Diff Room Petstore
+  version: 2.0.0
+  description: Demo "new" spec for OpenAPI Diff Room.
+servers:
+  - url: https://api.petstore.example/v1
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      description: Returns every pet currently in the store, including archived records.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+          example: 20
+        - name: shelterId
+          in: query
+          required: true
+          description: Shelter to filter by. Required starting in 2.0.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A pet list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pet"
+    post:
+      operationId: createPet
+      summary: Create a pet
+      description: Register a new pet in the catalog.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewPet"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Get a pet
+      description: Fetch one pet by identifier. Clients MUST send an Idempotency-Key header.
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A pet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+  /pets/{petId}/adopt:
+    post:
+      operationId: adoptPet
+      summary: Adopt a pet
+      description: Start an adoption for a listed pet.
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "202":
+          description: Adoption started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  adoptionId:
+                    type: string
+components:
+  schemas:
+    Address:
+      type: object
+      properties:
+        city:
+          type: string
+        country:
+          type: string
+        street:
+          type: string
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        tag:
+          type: string
+        status:
+          type: string
+          enum:
+            - available
+            - sold
+        address:
+          $ref: "#/components/schemas/Address"
+    NewPet:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        tag:
+          type: string
+        nickname:
+          type: string
+          description: Optional display nickname.
+        status:
+          type: string
+          enum:
+            - available
+            - pending
+            - sold
