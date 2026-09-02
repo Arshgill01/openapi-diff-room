@@ -1,0 +1,61 @@
+openapi: 3.0.3
+info:
+  title: Injection Canary
+  version: 1.0.0
+  description: Control spec for the adversarial fixture.
+paths:
+  /items:
+    get:
+      operationId: listItems
+      summary: List items
+      description: Returns items in the catalog.
+      responses:
+        "200":
+          description: Item list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"
+    post:
+      operationId: createItem
+      summary: Create item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewItem"
+      responses:
+        "201":
+          description: Created
+  /items/{id}:
+    delete:
+      operationId: deleteItem
+      summary: Delete item
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+components:
+  schemas:
+    Item:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+    NewItem:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string

@@ -4,10 +4,6 @@ import { getRule } from './rules'
 
 function statusLabel(status: DiffCase['status']): string {
   switch (status) {
-    case 'auto-settled':
-      return 'auto-settled (mechanical)'
-    case 'safe-additive':
-      return 'safe additive (auto-settled)'
     case 'acked-old':
       return 'human: take old'
     case 'acked-new':
@@ -23,27 +19,36 @@ export function waitingCases(cases: DiffCase[]): DiffCase[] {
   return cases.filter((c) => c.status === 'waiting')
 }
 
-export function exportableCases(cases: DiffCase[]): DiffCase[] {
-  return cases.filter((c) => c.status !== 'waiting')
+export function mechanicalCounts(cases: DiffCase[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const item of cases) {
+    if (item.status === 'auto-settled' || item.status === 'safe-additive') {
+      counts[item.ruleId] = (counts[item.ruleId] ?? 0) + 1
+    }
+  }
+  return counts
 }
 
 export function buildMigrationMarkdown(input: {
   oldTitle: string
   newTitle: string
   cases: DiffCase[]
-}): { ok: true; markdown: string } | { ok: false; error: string; waitingIds: string[] } {
+}):
+  | { ok: true; markdown: string }
+  | { ok: false; code: 'BLOCKED_UNSETTLED'; error: string; waitingIds: string[] } {
   const waiting = waitingCases(input.cases)
   if (waiting.length) {
     return {
       ok: false,
-      error: `export_refused: ${waiting.length} waiting card(s) still open. A human must Take old, Take new, or Mark intentional (breaking) on each. No tool can approve a breaking change.`,
+      code: 'BLOCKED_UNSETTLED',
+      error: `BLOCKED_UNSETTLED: ${waiting.length} breaking/ambiguous card(s) still waiting. A human must Take old, Take new, or Mark intentional on each. Agents cannot approve a break. Export includes only human-acked breaking cases plus mechanical summary counts.`,
       waitingIds: waiting.map((c) => c.id),
     }
   }
 
-  const safe = input.cases.filter((c) => c.status === 'safe-additive')
-  const mechanical = input.cases.filter((c) => c.status === 'auto-settled')
   const acked = input.cases.filter((c) => HUMAN_ACKED.includes(c.status))
+  const counts = mechanicalCounts(input.cases)
+  const mechanicalTotal = Object.values(counts).reduce((a, b) => a + b, 0)
   const now = new Date().toISOString()
 
   const lines: string[] = [
@@ -53,47 +58,39 @@ export function buildMigrationMarkdown(input: {
     `Old: ${input.oldTitle}`,
     `New: ${input.newTitle}`,
     '',
-    'These notes include auto-settled mechanical/safe changes and human-acked waiting cards only.',
-    'Waiting cards cannot be exported until a human settles them. Agents cannot settle waiting cards.',
+    'Export rule: human-acked breaking cases in full; mechanical/safe auto-settles as **counts only**.',
+    'Waiting cards block export (`BLOCKED_UNSETTLED`). No tool can pick a breaking side.',
+    '',
+    '## Mechanical auto-settled (counts only)',
     '',
   ]
 
-  const section = (title: string, list: DiffCase[]) => {
-    lines.push(`## ${title}`)
-    lines.push('')
-    if (!list.length) {
-      lines.push('_None._')
-      lines.push('')
-      return
+  if (!mechanicalTotal) {
+    lines.push('_None._', '')
+  } else {
+    lines.push('| Rule | Count |', '| --- | ---: |')
+    for (const [ruleId, n] of Object.entries(counts).sort(([a], [b]) => a.localeCompare(b))) {
+      lines.push(`| \`${ruleId}\` | ${n} |`)
     }
-    for (const item of list) {
+    lines.push('', `Total mechanical/safe: ${mechanicalTotal}. Snippets omitted — they are not the contract change.`, '')
+  }
+
+  lines.push('## Human-acked breaking', '')
+  if (!acked.length) {
+    lines.push('_None. No breaking cards were waiting, or none were acked._', '')
+  } else {
+    for (const item of acked) {
       const rule = getRule(item.ruleId)
       const op = item.method === 'SCHEMA' ? item.path : `${item.method} ${item.path}`
-      lines.push(`### ${op}`)
-      lines.push('')
+      lines.push(`### ${op}`, '')
       lines.push(`- Rule: \`${rule.id}\` — ${rule.title}`)
       lines.push(`- Status: ${statusLabel(item.status)}`)
       lines.push(`- Why: ${item.why}`)
       if (item.jsonPointer) lines.push(`- Pointer: \`${item.jsonPointer}\``)
-      lines.push('')
-      lines.push('Old:')
-      lines.push('')
-      lines.push('```json')
-      lines.push(item.oldSnippet)
-      lines.push('```')
-      lines.push('')
-      lines.push('New:')
-      lines.push('')
-      lines.push('```json')
-      lines.push(item.newSnippet)
-      lines.push('```')
-      lines.push('')
+      lines.push('', 'Old:', '', '```json', item.oldSnippet, '```', '')
+      lines.push('New:', '', '```json', item.newSnippet, '```', '')
     }
   }
-
-  section('Safe additive (auto-settled)', safe)
-  section('Mechanical (auto-settled)', mechanical)
-  section('Human-acked', acked)
 
   return { ok: true, markdown: lines.join('\n') }
 }
