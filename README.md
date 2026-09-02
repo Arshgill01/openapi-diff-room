@@ -8,7 +8,11 @@ This is a client-only WebMCP demo for the OpenAI WebMCP Challenge (deadline 3 Se
 
 ## Live demo
 
-Public HTTPS: see the latest deploy note at the bottom of this README (Netlify or GitHub Pages). Locally:
+- Public static: https://cdn.jsdelivr.net/gh/Arshgill01/openapi-diff-room@main/docs/index.html
+- Mirror: https://raw.githack.com/Arshgill01/openapi-diff-room/main/docs/index.html
+- Source: https://github.com/Arshgill01/openapi-diff-room
+
+Locally:
 
 ```bash
 npm install
