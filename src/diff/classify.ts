@@ -1,4 +1,5 @@
 import type { DiffCase } from '../types'
+import { isInjectionText, stripVendorExtensions } from './injection'
 import { getRule } from './rules'
 import {
   deepEqual,
@@ -127,7 +128,10 @@ function schemaNames(doc: Record<string, unknown>): string[] {
 }
 
 function hasContractLanguage(value: unknown): boolean {
-  if (typeof value === 'string') return CONTRACT_RE.test(value)
+  if (typeof value === 'string') {
+    if (isInjectionText(value)) return false
+    return CONTRACT_RE.test(value)
+  }
   if (isPlainObject(value)) {
     return ['description', 'summary', 'title'].some((key) => hasContractLanguage(value[key]))
   }
@@ -622,9 +626,11 @@ export function classifyDocs(
   oldDoc: Record<string, unknown>,
   newDoc: Record<string, unknown>,
 ): DiffCase[] {
+  const oldClean = stripVendorExtensions(oldDoc) as Record<string, unknown>
+  const newClean = stripVendorExtensions(newDoc) as Record<string, unknown>
   const cases: DiffCase[] = []
-  const oldOps = listOperations(oldDoc)
-  const newOps = listOperations(newDoc)
+  const oldOps = listOperations(oldClean)
+  const newOps = listOperations(newClean)
   const keys = new Set([...oldOps.keys(), ...newOps.keys()])
 
   for (const key of keys) {
@@ -647,31 +653,31 @@ export function classifyDocs(
       ...compareOperation(oldOp.operation, newOp.operation, oldOp.pathItem, newOp.pathItem, {
         method: oldOp.method,
         path: oldOp.path,
-        rootOld: oldDoc,
-        rootNew: newDoc,
+        rootOld: oldClean,
+        rootNew: newClean,
       }),
     )
   }
 
-  const names = new Set([...schemaNames(oldDoc), ...schemaNames(newDoc)])
-  const oldSchemas = isPlainObject((oldDoc.components as Record<string, unknown> | undefined)?.schemas)
-    ? ((oldDoc.components as Record<string, unknown>).schemas as Record<string, unknown>)
+  const names = new Set([...schemaNames(oldClean), ...schemaNames(newClean)])
+  const oldSchemas = isPlainObject((oldClean.components as Record<string, unknown> | undefined)?.schemas)
+    ? ((oldClean.components as Record<string, unknown>).schemas as Record<string, unknown>)
     : {}
-  const newSchemas = isPlainObject((newDoc.components as Record<string, unknown> | undefined)?.schemas)
-    ? ((newDoc.components as Record<string, unknown>).schemas as Record<string, unknown>)
+  const newSchemas = isPlainObject((newClean.components as Record<string, unknown> | undefined)?.schemas)
+    ? ((newClean.components as Record<string, unknown>).schemas as Record<string, unknown>)
     : {}
 
   for (const name of names) {
     if (!(name in oldSchemas) || !(name in newSchemas)) continue
-    const location: Ctx['location'] = inferSchemaLocation(name, oldDoc, newDoc)
+    const location: Ctx['location'] = inferSchemaLocation(name, oldClean, newClean)
     cases.push(
       ...compareSchema(oldSchemas[name], newSchemas[name], {
         method: 'SCHEMA',
         path: `#/components/schemas/${name}`,
         pointer: `#/components/schemas/${name}`,
         location,
-        rootOld: oldDoc,
-        rootNew: newDoc,
+        rootOld: oldClean,
+        rootNew: newClean,
       }),
     )
   }
