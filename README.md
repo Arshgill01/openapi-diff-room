@@ -6,10 +6,7 @@ On one live page, compare two OpenAPI 3.x specs. Mechanical edits auto-settle. B
 
 This is a client-only WebMCP demo for the OpenAI WebMCP Challenge (deadline 3 Sep 2026, 1pm PDT). It is **not** oasdiff parity — the classifier is a named rule table in [`src/diff/rules.ts`](src/diff/rules.ts) (~25 rules).
 
-## Live demo
-
-- **HTTPS:** _filled after deploy in this README’s “Live URL” section_
-- **Source:** https://github.com/Arshgill01/openapi-diff-room
+## Run locally
 
 ```bash
 npm install
@@ -19,11 +16,11 @@ npm run dev
 
 Dev server: `http://127.0.0.1:4721`
 
-If `document.modelContext` is missing, a banner says so. Classify / export still work from the buttons.
+If `document.modelContext` is missing, a banner says so. Classify / export still work from the buttons. Production static output is `npm run build` → `dist/`.
 
 ## 60-second judge path
 
-1. Open the live HTTPS URL in **ChatGPT’s in-app browser**, or Chrome with `chrome://flags/#enable-webmcp-testing`.
+1. Open the page in **ChatGPT’s in-app browser**, or Chrome with `chrome://flags/#enable-webmcp-testing`.
 2. Click **Load demo pair** (or `load_fixture` `{ "fixture": "demo" }`).
 3. Ask: “Classify this OpenAPI diff and summarize what you settled vs what waits on me.”
 4. Watch mechanical settle (green) and breaking wait (cards).
@@ -90,18 +87,6 @@ Registered with `document.modelContext.registerTool` (fallback `navigator.modelC
 ## Stack
 
 Vite, TypeScript, React, client-only. Optional `localStorage`. MIT.
-
-## Deploy
-
-```bash
-npm run build
-npx netlify deploy --prod --dir=dist
-# or npx vercel --prod
-```
-
-## Live URL
-
-See the bottom of this file after the production deploy lands (Netlify / Vercel / GitHub Pages).
 
 ## Devpost
 
