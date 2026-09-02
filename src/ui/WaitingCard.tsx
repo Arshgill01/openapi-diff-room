@@ -5,13 +5,14 @@ import { humanSettle } from '../room/store'
 type WaitingCardProps = {
   item: DiffCase
   focused: boolean
+  pulse?: boolean
 }
 
-export function WaitingCard({ item, focused }: WaitingCardProps) {
+export function WaitingCard({ item, focused, pulse }: WaitingCardProps) {
   const rule = getRule(item.ruleId)
   return (
     <article
-      className={`card ${focused ? 'is-focused' : ''}`}
+      className={`card ${focused ? 'is-focused' : ''} ${pulse ? 'is-refused-pulse' : ''}`}
       id={`case-${cssId(item.id)}`}
       data-case-id={item.id}
     >

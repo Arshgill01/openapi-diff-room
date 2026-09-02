@@ -1,6 +1,13 @@
 import { useEffect } from 'react'
-import { countsOf, exportNotes, hydrateParsedDocs, loadDemoPair, useRoom } from '../room/store'
-import { ROOM_TOOLS } from '../webmcp/tools'
+import {
+  countsOf,
+  exportNotes,
+  hydrateParsedDocs,
+  loadFixture,
+  simulateAgentSettleAttempt,
+  useRoom,
+} from '../room/store'
+import { ALWAYS_ON_TOOLS, SCOPED_TOOLS } from '../webmcp/tools'
 
 type HeaderProps = {
   onClassify: () => void
@@ -22,8 +29,8 @@ export function Header({ onClassify }: HeaderProps) {
           <div>
             <h1>OpenAPI Diff Room</h1>
             <p className="tagline">
-              Agent clears mechanical noise. Breaking changes wait on you. Export only
-              what is settled or human-acked.
+              Agent clears mechanical OpenAPI noise. Breaking waits on you. Export is
+              blocked until every break is human-acked — counts only for the rest.
             </p>
           </div>
         </div>
@@ -31,19 +38,23 @@ export function Header({ onClassify }: HeaderProps) {
           <span className={room.webmcpPresent ? 'pill pill-ok' : 'pill pill-warn'}>
             {room.webmcpPresent
               ? `WebMCP connected · ${room.webmcpToolCount} tools`
-              : `WebMCP missing · ${ROOM_TOOLS.length} tools idle`}
+              : `WebMCP missing · ${ALWAYS_ON_TOOLS.length} always-on idle`}
           </span>
           <span className="pill">
-            {counts.settled + counts.safe + counts.acked} settled
+            {ALWAYS_ON_TOOLS.length} always-on
+            {room.oldText.trim() && room.newText.trim() ? ` · ${SCOPED_TOOLS.length} scoped` : ''}
           </span>
-          <span className={counts.waiting ? 'pill pill-wait' : 'pill'}>
-            {counts.waiting} waiting
-          </span>
+          <span className="pill">{counts.settled + counts.safe} mechanical</span>
+          <span className={counts.waiting ? 'pill pill-wait' : 'pill'}>{counts.waiting} waiting</span>
+          <span className="pill">{counts.acked} acked</span>
         </div>
       </div>
       <div className="header-actions">
-        <button type="button" className="btn btn-primary" onClick={() => loadDemoPair()}>
+        <button type="button" className="btn btn-primary" onClick={() => loadFixture('demo')}>
           Load demo pair
+        </button>
+        <button type="button" className="btn" onClick={() => loadFixture('injection')}>
+          Load injection fixture
         </button>
         <button type="button" className="btn" onClick={onClassify}>
           Classify diff
@@ -66,15 +77,20 @@ export function Header({ onClassify }: HeaderProps) {
         >
           Export notes
         </button>
+        <button type="button" className="btn btn-break" onClick={() => simulateAgentSettleAttempt()}>
+          Simulate agent take_new
+        </button>
         <details className="judge">
           <summary>60s judge path</summary>
           <ol>
             <li>Open this URL in ChatGPT’s in-app browser or Chrome with <code>#enable-webmcp-testing</code>.</li>
             <li>Click <strong>Load demo pair</strong>.</li>
             <li>Ask: “Classify this OpenAPI diff and summarize what you settled vs what waits on me.”</li>
+            <li>Watch mechanical settle (green) and breaking wait (cards). No tool can Take new.</li>
             <li>On one waiting card, click <strong>Mark intentional (breaking)</strong>.</li>
-            <li>Ask: “list_room then export_migration_notes.”</li>
-            <li>Export refuses while any waiting cards remain; it succeeds only after they are human-acked.</li>
+            <li>Ask <code>export_migration_notes</code>. It returns <code>BLOCKED_UNSETTLED</code> until every remaining break is human-acked.</li>
+            <li>Ack the rest, export again: notes list acked breaks in full and mechanical <em>counts only</em>.</li>
+            <li>Click <strong>Load injection fixture</strong>. Classify still waits on the removed endpoint; the page stamps that the “auto-approve” payload was ignored. Optional: <strong>Simulate agent take_new</strong> → <code>REQUIRES_HUMAN</code>.</li>
           </ol>
         </details>
       </div>

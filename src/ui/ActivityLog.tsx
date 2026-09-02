@@ -3,21 +3,43 @@ import { useRoom } from '../room/store'
 export function ActivityLog() {
   const room = useRoom()
   return (
-    <section className="log" aria-label="Activity log">
-      <h2>Activity</h2>
+    <section className="log" aria-label="Call and refusal log">
+      <h2>Call / refusal log</h2>
       {room.activity.length === 0 ? (
-        <p className="muted">Tool calls and human decisions will list here.</p>
+        <p className="muted">Every tool call (args, accepted/refused, rule or code) lists here.</p>
       ) : (
-        <ul>
-          {room.activity.map((entry) => (
-            <li key={entry.id}>
-              <time dateTime={entry.at}>{formatTime(entry.at)}</time>
-              <span className={`kind kind-${entry.kind}`}>{entry.kind}</span>
-              <span className="log-title">{entry.title}</span>
-              {entry.detail ? <span className="muted">{entry.detail}</span> : null}
-            </li>
-          ))}
-        </ul>
+        <div className="log-table-wrap">
+          <table className="log-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Who</th>
+                <th>Call</th>
+                <th>Args</th>
+                <th>Result</th>
+                <th>Code / rule</th>
+              </tr>
+            </thead>
+            <tbody>
+              {room.activity.map((entry) => (
+                <tr key={entry.id} className={entry.outcome === 'refused' ? 'is-refused' : ''}>
+                  <td>
+                    <time dateTime={entry.at}>{formatTime(entry.at)}</time>
+                  </td>
+                  <td>
+                    <span className={`kind kind-${entry.kind}`}>{entry.kind}</span>
+                  </td>
+                  <td className="log-title">{entry.tool ?? entry.title}</td>
+                  <td className="mono muted">{entry.argsSummary ?? '—'}</td>
+                  <td>
+                    <span className={`outcome outcome-${entry.outcome}`}>{entry.outcome}</span>
+                  </td>
+                  <td className="mono">{entry.code ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   )

@@ -30,6 +30,12 @@ export function RoomPane({ mobileTab }: RoomPaneProps) {
           {counts.waiting} waiting · {counts.settled} mechanical · {counts.safe} safe · {counts.acked} acked
         </span>
       </div>
+      {room.lastRefusal && (
+        <div className="refused-stamp" role="status">
+          REFUSED
+          <span>{room.lastRefusal.code}</span>
+        </div>
+      )}
       <div className="room-scroll">
         {!room.cases.length && !room.parseError && (
           <p className="empty">
@@ -41,7 +47,12 @@ export function RoomPane({ mobileTab }: RoomPaneProps) {
           <div className="stack">
             <h3>Waiting on you</h3>
             {waiting.map((item) => (
-              <WaitingCard key={item.id} item={item} focused={room.focusedId === item.id} />
+              <WaitingCard
+                key={item.id}
+                item={item}
+                focused={room.focusedId === item.id}
+                pulse={room.pulseWaiting}
+              />
             ))}
           </div>
         )}
