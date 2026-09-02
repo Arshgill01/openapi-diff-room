@@ -1,13 +1,18 @@
 import { useSyncExternalStore } from 'react'
 import { classifyDocs, sortCases } from '../diff/classify'
 import { buildMigrationMarkdown, specTitle } from '../diff/export'
+import { INJECTION_PAYLOAD, mergeInjectionHits, scanInjection } from '../diff/injection'
 import { fingerprint } from '../diff/normalize'
 import { parseSpec } from '../diff/parse'
-import { DEMO_NEW_YAML, DEMO_OLD_YAML } from '../fixtures'
-import type { CaseStatus, DiffCase, LogEntry } from '../types'
+import { fixturePair } from '../fixtures'
+import type { FixtureId } from '../fixtures'
+import type { CaseStatus, DiffCase, InjectionState, LogEntry, LogOutcome, RefusalState } from '../types'
 import { HUMAN_ACKED } from '../types'
+import type { Envelope, EnvelopeError, RoomStatus } from '../webmcp/envelope'
+import { ErrorCode } from '../webmcp/envelope'
+import { detectSettlementAttempt, summarizeArgs } from '../webmcp/guard'
 
-const STORAGE_KEY = 'openapi-diff-room.v1'
+const STORAGE_KEY = 'openapi-diff-room.v2'
 const MAX_LOG = 80
 
 export type RoomState = {
@@ -27,6 +32,10 @@ export type RoomState = {
   webmcpPresent: boolean
   webmcpToolCount: number
   lastExportAt: string | null
+  injection: InjectionState | null
+  lastRefusal: RefusalState | null
+  pulseWaiting: boolean
+  loadedFixture: FixtureId | null
 }
 
 function emptyState(): RoomState {
@@ -47,6 +56,10 @@ function emptyState(): RoomState {
     webmcpPresent: false,
     webmcpToolCount: 0,
     lastExportAt: null,
+    injection: null,
+    lastRefusal: null,
+    pulseWaiting: false,
+    loadedFixture: null,
   }
 }
 
@@ -69,6 +82,8 @@ function loadState(): RoomState {
       specsFingerprint: parsed.specsFingerprint ?? null,
       activity: Array.isArray(parsed.activity) ? parsed.activity.slice(0, MAX_LOG) : [],
       exportMarkdown: parsed.exportMarkdown ?? null,
+      injection: parsed.injection ?? null,
+      loadedFixture: parsed.loadedFixture ?? null,
     }
   } catch {
     return base
@@ -88,6 +103,8 @@ function persist(next: RoomState) {
         specsFingerprint: next.specsFingerprint,
         activity: next.activity.slice(0, 40),
         exportMarkdown: next.exportMarkdown,
+        injection: next.injection,
+        loadedFixture: next.loadedFixture,
       }),
     )
   } catch {
@@ -111,15 +128,13 @@ function nowIso() {
 }
 
 let logSeq = 0
-function pushLog(kind: LogEntry['kind'], title: string, detail?: string): LogEntry {
+function makeLog(entry: Omit<LogEntry, 'id' | 'at'>): LogEntry {
   logSeq += 1
-  return {
-    id: `log-${Date.now()}-${logSeq}`,
-    at: nowIso(),
-    kind,
-    title,
-    detail,
-  }
+  return { id: `log-${Date.now()}-${logSeq}`, at: nowIso(), ...entry }
+}
+
+function prependLog(entry: Omit<LogEntry, 'id' | 'at'>) {
+  patch({ activity: [makeLog(entry), ...state.activity].slice(0, MAX_LOG) })
 }
 
 export function getRoomState(): RoomState {
@@ -136,11 +151,12 @@ export function useRoom(): RoomState {
 }
 
 export function setWebmcpStatus(present: boolean, toolCount: number) {
+  if (state.webmcpPresent === present && state.webmcpToolCount === toolCount) return
   patch({ webmcpPresent: present, webmcpToolCount: toolCount })
 }
 
-export function setSpecText(side: 'old' | 'new', text: string) {
-  patch(side === 'old' ? { oldText: text, exportMarkdown: null, exportError: null } : { newText: text, exportMarkdown: null, exportError: null })
+export function specsAreLoaded(): boolean {
+  return Boolean(state.oldText.trim() && state.newText.trim())
 }
 
 export function countsOf(cases: DiffCase[]) {
@@ -150,6 +166,60 @@ export function countsOf(cases: DiffCase[]) {
     settled: cases.filter((c) => c.status === 'auto-settled').length,
     acked: cases.filter((c) => HUMAN_ACKED.includes(c.status)).length,
   }
+}
+
+export function snapshotRoomStatus(): RoomStatus {
+  const counts = countsOf(state.cases)
+  return {
+    specsLoaded: specsAreLoaded(),
+    classified: Boolean(state.classifiedAt && !state.parseError),
+    webmcpPresent: state.webmcpPresent,
+    toolCount: state.webmcpToolCount,
+    injectionIgnored: Boolean(state.injection?.ignored),
+    counts: {
+      waiting: counts.waiting,
+      settled: counts.settled,
+      safe: counts.safe,
+      acked: counts.acked,
+      total: state.cases.length,
+    },
+    waitingIds: state.cases.filter((c) => c.status === 'waiting').map((c) => c.id),
+  }
+}
+
+export function validNextActions(status: RoomStatus = snapshotRoomStatus()): string[] {
+  const actions = ['get_room_state', 'list_room', 'load_fixture', 'set_specs']
+  if (status.specsLoaded) {
+    actions.push('classify_diff', 'focus_case')
+    if (status.counts.waiting > 0) {
+      actions.push('HUMAN: Take old | Take new | Mark intentional (breaking)')
+    } else if (status.classified) {
+      actions.push('export_migration_notes')
+    }
+  } else {
+    actions.push('load_fixture fixture=demo')
+  }
+  return actions
+}
+
+export function buildEnvelope<T>(
+  ok: boolean,
+  opts: {
+    data?: T
+    error?: EnvelopeError
+    note_to_agent?: string
+  } = {},
+): Envelope<T> {
+  const roomStatus = snapshotRoomStatus()
+  const env: Envelope<T> = {
+    ok,
+    roomStatus,
+    validNextActions: validNextActions(roomStatus),
+  }
+  if (ok) env.data = opts.data
+  else env.error = opts.error
+  if (opts.note_to_agent) env.note_to_agent = opts.note_to_agent
+  return env
 }
 
 export function summarizeCases(cases: DiffCase[]) {
@@ -163,36 +233,43 @@ export function summarizeCases(cases: DiffCase[]) {
   }))
 }
 
-type ClassifyResult = {
-  ok: boolean
-  error?: string
-  idempotent: boolean
-  fingerprint: string
-  counts: ReturnType<typeof countsOf>
-  autoSettled: ReturnType<typeof summarizeCases>
-  safeAdditive: ReturnType<typeof summarizeCases>
-  waiting: ReturnType<typeof summarizeCases>
+function applyInjection(oldDoc: Record<string, unknown>, newDoc: Record<string, unknown>): InjectionState | null {
+  const hits = mergeInjectionHits(scanInjection(oldDoc, 'old'), scanInjection(newDoc, 'new'))
+  if (!hits.length) return null
+  return {
+    ignored: true,
+    payload: INJECTION_PAYLOAD,
+    locations: hits.map((h) => h.path),
+  }
 }
 
-function runClassify(source: string): ClassifyResult {
+export function setSpecText(side: 'old' | 'new', text: string) {
+  patch(
+    side === 'old'
+      ? { oldText: text, exportMarkdown: null, exportError: null, lastRefusal: null }
+      : { newText: text, exportMarkdown: null, exportError: null, lastRefusal: null },
+  )
+}
+
+function runClassify(source: string, tool?: string, argsSummary?: string) {
   const fp = fingerprint(state.oldText, state.newText)
-  if (
-    state.specsFingerprint === fp &&
-    state.cases.length > 0 &&
-    !state.parseError
-  ) {
+  if (state.specsFingerprint === fp && state.cases.length > 0 && !state.parseError) {
     const counts = countsOf(state.cases)
-    patch({
-      activity: [
-        pushLog('tool', source, `Idempotent classify. settled=${counts.settled} safe=${counts.safe} waiting=${counts.waiting}`),
-        ...state.activity,
-      ].slice(0, MAX_LOG),
+    prependLog({
+      kind: 'tool',
+      title: source,
+      detail: `Idempotent classify. settled=${counts.settled} safe=${counts.safe} waiting=${counts.waiting}`,
+      tool: tool ?? 'classify_diff',
+      argsSummary,
+      outcome: 'accepted',
+      code: 'idempotent',
     })
     return {
-      ok: true,
+      ok: true as const,
       idempotent: true,
       fingerprint: fp,
       counts,
+      injectionIgnored: Boolean(state.injection?.ignored),
       autoSettled: summarizeCases(state.cases.filter((c) => c.status === 'auto-settled')),
       safeAdditive: summarizeCases(state.cases.filter((c) => c.status === 'safe-additive')),
       waiting: summarizeCases(state.cases.filter((c) => c.status === 'waiting')),
@@ -202,11 +279,11 @@ function runClassify(source: string): ClassifyResult {
   const oldParsed = parseSpec(state.oldText, 'Old')
   const newParsed = parseSpec(state.newText, 'New')
   if (!oldParsed.ok || !newParsed.ok) {
-    const error = [!oldParsed.ok ? oldParsed.error : '', !newParsed.ok ? newParsed.error : '']
+    const message = [!oldParsed.ok ? oldParsed.error : '', !newParsed.ok ? newParsed.error : '']
       .filter(Boolean)
       .join(' ')
     patch({
-      parseError: error,
+      parseError: message,
       parseWarning: null,
       oldDoc: null,
       newDoc: null,
@@ -215,14 +292,42 @@ function runClassify(source: string): ClassifyResult {
       specsFingerprint: fp,
       exportMarkdown: null,
       exportError: null,
-      activity: [pushLog('system', source, error), ...state.activity].slice(0, MAX_LOG),
+      injection: null,
+      lastRefusal: null,
+      activity: [
+        makeLog({
+          kind: 'tool',
+          title: source,
+          detail: message,
+          tool: tool ?? 'classify_diff',
+          argsSummary,
+          outcome: 'refused',
+          code: ErrorCode.PARSE_FAILED,
+        }),
+        ...state.activity,
+      ].slice(0, MAX_LOG),
     })
-    return { ok: false, error, idempotent: false, fingerprint: fp, counts: countsOf([]), autoSettled: [], safeAdditive: [], waiting: [] }
+    return {
+      ok: false as const,
+      error: message,
+      code: ErrorCode.PARSE_FAILED,
+      idempotent: false,
+      fingerprint: fp,
+      counts: countsOf([]),
+      injectionIgnored: false,
+      autoSettled: [],
+      safeAdditive: [],
+      waiting: [],
+    }
   }
 
+  const injection = applyInjection(oldParsed.doc, newParsed.doc)
   const cases = sortCases(classifyDocs(oldParsed.doc, newParsed.doc))
   const warning = [oldParsed.warning, newParsed.warning].filter(Boolean).join(' ') || null
   const counts = countsOf(cases)
+  const injectionNote = injection
+    ? ` Injection payload ignored (${injection.locations.length} hit(s)); classification used the rule table only.`
+    : ''
   patch({
     oldDoc: oldParsed.doc,
     newDoc: newParsed.doc,
@@ -234,30 +339,41 @@ function runClassify(source: string): ClassifyResult {
     exportMarkdown: null,
     exportError: null,
     focusedId: null,
+    injection,
+    lastRefusal: null,
+    pulseWaiting: false,
     activity: [
-      pushLog(
-        source.startsWith('tool:') ? 'tool' : 'human',
-        source,
-        `Classified ${cases.length} cases. mechanical=${counts.settled} safe=${counts.safe} waiting=${counts.waiting}`,
-      ),
+      makeLog({
+        kind: source.startsWith('tool:') ? 'tool' : 'human',
+        title: source,
+        detail: `Classified ${cases.length} cases. mechanical=${counts.settled} safe=${counts.safe} waiting=${counts.waiting}.${injectionNote}`,
+        tool: tool ?? (source.startsWith('tool:') ? 'classify_diff' : undefined),
+        argsSummary,
+        outcome: 'accepted',
+        code: injection ? 'INJECTION_IGNORED' : 'classified',
+      }),
       ...state.activity,
     ].slice(0, MAX_LOG),
   })
   return {
-    ok: true,
+    ok: true as const,
     idempotent: false,
     fingerprint: fp,
     counts,
+    injectionIgnored: Boolean(injection?.ignored),
+    injectionLocations: injection?.locations ?? [],
     autoSettled: summarizeCases(cases.filter((c) => c.status === 'auto-settled')),
     safeAdditive: summarizeCases(cases.filter((c) => c.status === 'safe-additive')),
     waiting: summarizeCases(cases.filter((c) => c.status === 'waiting')),
   }
 }
 
-export function loadDemoPair(source = 'human: Load demo pair'): ClassifyResult {
+export function loadFixture(id: FixtureId, source?: string) {
+  const pair = fixturePair(id)
+  const title = source ?? `load_fixture ${id}`
   patch({
-    oldText: DEMO_OLD_YAML,
-    newText: DEMO_NEW_YAML,
+    oldText: pair.old,
+    newText: pair.new,
     cases: [],
     specsFingerprint: null,
     classifiedAt: null,
@@ -265,12 +381,31 @@ export function loadDemoPair(source = 'human: Load demo pair'): ClassifyResult {
     exportError: null,
     parseError: null,
     focusedId: null,
-    activity: [pushLog(source.startsWith('tool:') ? 'tool' : 'human', source, 'Loaded Petstore v1 vs v2 demo pair. Room cleared.'), ...state.activity].slice(0, MAX_LOG),
+    loadedFixture: id,
+    lastRefusal: null,
+    pulseWaiting: false,
+    injection: null,
+    activity: [
+      makeLog({
+        kind: title.startsWith('tool:') || title.startsWith('load_fixture') ? 'tool' : 'human',
+        title,
+        detail: `Loaded ${pair.label}. Room cleared.`,
+        tool: 'load_fixture',
+        argsSummary: JSON.stringify({ fixture: id }),
+        outcome: 'accepted',
+        code: 'loaded',
+      }),
+      ...state.activity,
+    ].slice(0, MAX_LOG),
   })
-  return runClassify(source)
+  return runClassify(title, 'load_fixture', JSON.stringify({ fixture: id }))
 }
 
-export function setSpecs(oldText: string, newText: string, source = 'tool: set_specs'): ClassifyResult {
+export function loadDemoPair(source = 'human: Load demo pair') {
+  return loadFixture('demo', source)
+}
+
+export function setSpecs(oldText: string, newText: string, source = 'tool: set_specs') {
   patch({
     oldText,
     newText,
@@ -281,13 +416,51 @@ export function setSpecs(oldText: string, newText: string, source = 'tool: set_s
     exportError: null,
     parseError: null,
     focusedId: null,
-    activity: [pushLog('tool', source, 'Specs replaced. Room cleared and reclassified.'), ...state.activity].slice(0, MAX_LOG),
+    loadedFixture: null,
+    lastRefusal: null,
+    pulseWaiting: false,
+    injection: null,
+    activity: [
+      makeLog({
+        kind: 'tool',
+        title: source,
+        detail: 'Specs replaced. Room cleared and reclassified.',
+        tool: 'set_specs',
+        argsSummary: summarizeArgs({ old: oldText, new: newText }),
+        outcome: 'accepted',
+        code: 'loaded',
+      }),
+      ...state.activity,
+    ].slice(0, MAX_LOG),
   })
-  return runClassify(source)
+  return runClassify(source, 'set_specs', summarizeArgs({ old: oldText, new: newText }))
 }
 
-export function classifyDiff(source = 'human: Classify'): ClassifyResult {
-  return runClassify(source)
+export function classifyDiff(source = 'human: Classify') {
+  if (!specsAreLoaded()) {
+    prependLog({
+      kind: 'tool',
+      title: source,
+      detail: 'Both specs must be loaded first.',
+      tool: 'classify_diff',
+      argsSummary: '{}',
+      outcome: 'refused',
+      code: ErrorCode.SPECS_REQUIRED,
+    })
+    return {
+      ok: false as const,
+      error: 'Both specs must be loaded first.',
+      code: ErrorCode.SPECS_REQUIRED,
+      idempotent: false,
+      fingerprint: '',
+      counts: countsOf([]),
+      injectionIgnored: false,
+      autoSettled: [],
+      safeAdditive: [],
+      waiting: [],
+    }
+  }
+  return runClassify(source, 'classify_diff', '{}')
 }
 
 export function focusCase(input: { caseId?: string; path?: string; method?: string }, source = 'tool: focus_case') {
@@ -300,23 +473,34 @@ export function focusCase(input: { caseId?: string; path?: string; method?: stri
       return pathOk && methodOk
     })
   if (!match) {
-    const error = 'No case matched that path/method/id. Load specs and classify first.'
-    patch({
-      activity: [pushLog('tool', source, error), ...state.activity].slice(0, MAX_LOG),
+    prependLog({
+      kind: 'tool',
+      title: source,
+      detail: 'No case matched that path/method/id.',
+      tool: 'focus_case',
+      argsSummary: summarizeArgs(input as Record<string, unknown>),
+      outcome: 'refused',
+      code: ErrorCode.NOT_FOUND,
     })
-    return { ok: false as const, error }
+    return { ok: false as const, error: 'No case matched that path/method/id. Load specs and classify first.', code: ErrorCode.NOT_FOUND }
   }
   patch({
     focusedId: match.id,
+    lastRefusal: null,
     activity: [
-      pushLog('tool', source, `Focused ${match.method} ${match.path} (${match.ruleId})`),
+      makeLog({
+        kind: 'tool',
+        title: source,
+        detail: `Focused ${match.method} ${match.path} (${match.ruleId})`,
+        tool: 'focus_case',
+        argsSummary: summarizeArgs(input as Record<string, unknown>),
+        outcome: 'accepted',
+        code: match.ruleId,
+      }),
       ...state.activity,
     ].slice(0, MAX_LOG),
   })
-  return {
-    ok: true as const,
-    case: match,
-  }
+  return { ok: true as const, case: match }
 }
 
 export function humanSettle(
@@ -331,22 +515,24 @@ export function humanSettle(
   const status: CaseStatus =
     decision === 'old' ? 'acked-old' : decision === 'new' ? 'acked-new' : 'acked-intentional'
   const label =
-    decision === 'old'
-      ? 'Take old'
-      : decision === 'new'
-        ? 'Take new'
-        : 'Mark intentional (breaking)'
+    decision === 'old' ? 'Take old' : decision === 'new' ? 'Take new' : 'Mark intentional (breaking)'
   const nextCases = state.cases.map((c) =>
-    c.id === id
-      ? { ...c, status, decidedBy: 'human' as const, decidedAt: nowIso() }
-      : c,
+    c.id === id ? { ...c, status, decidedBy: 'human' as const, decidedAt: nowIso() } : c,
   )
   patch({
     cases: sortCases(nextCases),
     exportMarkdown: null,
     exportError: null,
+    lastRefusal: null,
+    pulseWaiting: false,
     activity: [
-      pushLog('human', `${label} · ${current.method} ${current.path}`, current.ruleId),
+      makeLog({
+        kind: 'human',
+        title: `${label} · ${current.method} ${current.path}`,
+        detail: current.ruleId,
+        outcome: 'human',
+        code: current.ruleId,
+      }),
       ...state.activity,
     ].slice(0, MAX_LOG),
   })
@@ -355,39 +541,105 @@ export function humanSettle(
 }
 
 export function exportNotes(source = 'human: Export notes') {
+  if (!specsAreLoaded()) {
+    const error = {
+      code: ErrorCode.SPECS_REQUIRED,
+      message: 'Load two specs before exporting.',
+    }
+    markRefusal('export_migration_notes', error)
+    return { ok: false as const, code: ErrorCode.SPECS_REQUIRED, error: error.message, waitingIds: [] as string[] }
+  }
   const result = buildMigrationMarkdown({
     oldTitle: specTitle(state.oldDoc, 'Old spec'),
     newTitle: specTitle(state.newDoc, 'New spec'),
     cases: state.cases,
   })
   if (!result.ok) {
-    patch({
-      exportError: result.error,
-      exportMarkdown: null,
-      activity: [pushLog(source.startsWith('tool:') ? 'tool' : 'human', source, result.error), ...state.activity].slice(0, MAX_LOG),
+    markRefusal('export_migration_notes', {
+      code: result.code,
+      message: result.error,
+      waitingIds: result.waitingIds,
     })
+    patch({ exportError: result.error, exportMarkdown: null })
     return result
   }
   patch({
     exportMarkdown: result.markdown,
     exportError: null,
     lastExportAt: nowIso(),
+    lastRefusal: null,
+    pulseWaiting: false,
     activity: [
-      pushLog(source.startsWith('tool:') ? 'tool' : 'human', source, 'Exported migration notes from settled + human-acked cases.'),
+      makeLog({
+        kind: source.startsWith('tool:') ? 'tool' : 'human',
+        title: source,
+        detail: 'Exported human-acked breaking cases + mechanical counts only.',
+        tool: 'export_migration_notes',
+        argsSummary: '{}',
+        outcome: 'accepted',
+        code: 'exported',
+      }),
       ...state.activity,
     ].slice(0, MAX_LOG),
   })
   return result
 }
 
+export function markRefusal(tool: string, error: EnvelopeError, argsSummary = '{}') {
+  const refusal: RefusalState = {
+    code: error.code,
+    message: error.message,
+    tool,
+    at: nowIso(),
+  }
+  const pulse = error.code === ErrorCode.REQUIRES_HUMAN || error.code === ErrorCode.BLOCKED_UNSETTLED
+  patch({
+    lastRefusal: refusal,
+    pulseWaiting: pulse,
+    exportError: error.code === ErrorCode.BLOCKED_UNSETTLED ? error.message : state.exportError,
+    activity: [
+      makeLog({
+        kind: 'tool',
+        title: `tool: ${tool}`,
+        detail: error.message,
+        tool,
+        argsSummary,
+        outcome: 'refused',
+        code: error.code,
+      }),
+      ...state.activity,
+    ].slice(0, MAX_LOG),
+  })
+}
+
+export function refuseSettlementAttempt(tool: string, args: Record<string, unknown>): Envelope<never> {
+  const detected = detectSettlementAttempt(tool, args) ?? {
+    code: 'REQUIRES_HUMAN' as const,
+    message: 'Refused. Breaking sides are human-only.',
+    keys: [],
+  }
+  markRefusal(tool, { code: ErrorCode.REQUIRES_HUMAN, message: detected.message, details: { keys: detected.keys } }, summarizeArgs(args))
+  return buildEnvelope(false, {
+    error: { code: ErrorCode.REQUIRES_HUMAN, message: detected.message, details: { keys: detected.keys } },
+    note_to_agent:
+      'Do not retry with take_new / take_old / approve. Call list_room, tell the human which waiting ids remain, and wait. After they click, call list_room then export_migration_notes.',
+  })
+}
+
+/** Judge-path control: pretend an agent called take_new. Always refuses. */
+export function simulateAgentSettleAttempt() {
+  return refuseSettlementAttempt('take_new', { take_new: true, caseId: state.cases.find((c) => c.status === 'waiting')?.id ?? 'unknown' })
+}
+
 export function listRoomPayload() {
   const counts = countsOf(state.cases)
   return {
-    webmcpPresent: state.webmcpPresent,
-    toolCount: state.webmcpToolCount,
     classifiedAt: state.classifiedAt,
     fingerprint: state.specsFingerprint,
     parseError: state.parseError,
+    injection: state.injection,
+    lastRefusal: state.lastRefusal,
+    loadedFixture: state.loadedFixture,
     counts: {
       settled: counts.settled,
       safe: counts.safe,
@@ -419,6 +671,21 @@ export function hydrateParsedDocs() {
       newDoc: newParsed.doc,
       parseError: null,
       parseWarning: [oldParsed.warning, newParsed.warning].filter(Boolean).join(' ') || null,
+      injection: applyInjection(oldParsed.doc, newParsed.doc),
     })
   }
 }
+
+export function logAccepted(tool: string, detail: string, argsSummary: string, code: string) {
+  prependLog({
+    kind: 'tool',
+    title: `tool: ${tool}`,
+    detail,
+    tool,
+    argsSummary,
+    outcome: 'accepted' as LogOutcome,
+    code,
+  })
+}
+
+export { detectSettlementAttempt, summarizeArgs }
